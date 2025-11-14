@@ -1371,7 +1371,8 @@ function generateCSS(fontFiles, format, fontWeight, fontStyle) {
     let css = '';
 
     fontFiles.forEach((file, index) => {
-        const fontUrl = `./fonts/${fontFileName}-subset-${index + 1}.${format}`;
+        // CSS 文件在 styles/ 目录下，字体文件在 fonts/ 目录下，需要使用相对路径 ../fonts/
+        const fontUrl = `../fonts/${fontFileName}-subset-${index + 1}.${format}`;
         const unicodeRange = generateUnicodeRange(file.codepoints);
 
         css += `@font-face {
