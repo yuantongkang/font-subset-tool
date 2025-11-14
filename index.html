@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title data-i18n="title">字体子集化工具</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <div style="flex: 1;"></div>
+                <div class="language-switcher" style="display: flex; gap: 0.5rem;">
+                    <button id="langZh" class="lang-btn active" onclick="switchLanguage('zh')">中文</button>
+                    <button id="langEn" class="lang-btn" onclick="switchLanguage('en')">English</button>
+                </div>
+            </div>
+            <h1 data-i18n="title">字体子集化工具</h1>
+            <p data-i18n="description">上传字体文件，生成优化的子集字体和 CSS</p>
+        </header>
+
+        <main>
+            <!-- 文件上传区域 -->
+            <section class="upload-section">
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-content">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                        <h3 data-i18n="uploadTitle">拖放字体文件到这里</h3>
+                        <p data-i18n="uploadDescription">支持 TTF, OTF, WOFF, WOFF2 格式</p>
+                        <button class="btn-primary" onclick="document.getElementById('fontFile').click()" data-i18n="selectFile">
+                            选择文件
+                        </button>
+                    </div>
+                    <input type="file" id="fontFile" accept=".ttf,.otf,.woff,.woff2" hidden>
+                </div>
+            </section>
+
+            <!-- 字体预览区域 -->
+            <section class="preview-section" id="previewSection" style="display: none;">
+                <h2 data-i18n="previewTitle">字体预览</h2>
+                <div class="preview-container">
+                    <div class="font-info">
+                        <h3 id="fontName" data-i18n="fontName">字体名称</h3>
+                        <div class="info-grid">
+                            <div class="info-item">
+                                <label data-i18n="fontFamily">字体家族:</label>
+                                <span id="fontFamily">-</span>
+                            </div>
+                            <div class="info-item">
+                                <label data-i18n="fontFormat">字体格式:</label>
+                                <span id="fontFormat">-</span>
+                            </div>
+                            <div class="info-item">
+                                <label data-i18n="totalGlyphs">字符总数:</label>
+                                <span id="totalGlyphs">-</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="preview-text">
+                        <h4 data-i18n="previewText">预览文本</h4>
+                        <textarea id="previewText" data-i18n-placeholder="previewPlaceholder">ABCDEFGHIJKLMNOPQRSTUVWXYZ
+abcdefghijklmnopqrstuvwxyz
+0123456789
+中文预览文本</textarea>
+                        <div class="preview-display" id="previewDisplay"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 子集化配置区域 -->
+            <section class="config-section" id="configSection" style="display: none;">
+                <h2 data-i18n="configTitle">子集化配置</h2>
+                <div class="config-grid">
+                    <div class="config-group">
+                        <label for="subsetStrategy" data-i18n="subsetStrategy">子集策略:</label>
+                        <select id="subsetStrategy">
+                            <option value="all" data-i18n="subsetAll">包含所有字符</option>
+                            <option value="common" data-i18n="subsetCommon">常用字符 (字母、数字、标点)</option>
+                            <option value="chinese" data-i18n="subsetChinese">中文字符</option>
+                            <option value="custom" data-i18n="subsetCustom">自定义字符范围</option>
+                        </select>
+                    </div>
+                    <div class="config-group" id="customRangeGroup" style="display: none;">
+                        <label for="customRange" data-i18n="customRange">自定义 Unicode 范围:</label>
+                        <input type="text" id="customRange" data-i18n-placeholder="customRangePlaceholder">
+                        <small data-i18n="customRangeFormat">格式: U+XXXX-YYYY, U+ZZZZ</small>
+                    </div>
+                    <div class="config-group">
+                        <label for="outputFormat" data-i18n="outputFormat">输出格式:</label>
+                        <select id="outputFormat">
+                            <option value="woff2" data-i18n="formatWoff2">WOFF2 (推荐)</option>
+                            <option value="woff" data-i18n="formatWoff">WOFF</option>
+                            <option value="ttf" data-i18n="formatTtf">TTF</option>
+                        </select>
+                    </div>
+                    <div class="config-group">
+                        <label for="fontWeight" data-i18n="fontWeight">字体粗细:</label>
+                        <select id="fontWeight">
+                            <option value="normal" data-i18n="weightNormal">正常 (Normal)</option>
+                            <option value="bold" data-i18n="weightBold">粗体 (Bold)</option>
+                            <option value="lighter" data-i18n="weightLighter">更细 (Lighter)</option>
+                            <option value="bolder" data-i18n="weightBolder">更粗 (Bolder)</option>
+                            <option value="100">100</option>
+                            <option value="200">200</option>
+                            <option value="300">300</option>
+                            <option value="400">400</option>
+                            <option value="500">500</option>
+                            <option value="600">600</option>
+                            <option value="700">700</option>
+                            <option value="800">800</option>
+                            <option value="900">900</option>
+                        </select>
+                    </div>
+                    <div class="config-group">
+                        <label for="fontStyle" data-i18n="fontStyle">字体样式:</label>
+                        <select id="fontStyle">
+                            <option value="normal" data-i18n="styleNormal">正常 (Normal)</option>
+                            <option value="italic" data-i18n="styleItalic">斜体 (Italic)</option>
+                            <option value="oblique" data-i18n="styleOblique">倾斜 (Oblique)</option>
+                        </select>
+                    </div>
+                    <div class="config-group">
+                        <label for="splitStrategy" data-i18n="splitStrategy">分割策略:</label>
+                        <select id="splitStrategy">
+                            <option value="single" data-i18n="splitSingle">单个文件</option>
+                            <option value="byRange" data-i18n="splitByRange">按 Unicode 范围分割</option>
+                            <option value="byCount" data-i18n="splitByCount">按字符数量分割</option>
+                        </select>
+                    </div>
+                    <div class="config-group" id="splitCountGroup" style="display: none;">
+                        <label for="splitCount" data-i18n="splitCount">每个文件字符数:</label>
+                        <input type="number" id="splitCount" value="500" min="50" max="5000">
+                    </div>
+                </div>
+                <div class="subset-info">
+                    <p data-i18n="detectedChars" data-i18n-params='{"count": 0}'>检测到 <span id="detectedChars">0</span> 个可用字符，将自动分析并生成最优子集</p>
+                </div>
+            </section>
+
+            <!-- 操作按钮 -->
+            <section class="action-section" id="actionSection" style="display: none;">
+                <button class="btn-primary" id="generateBtn" onclick="generateSubset()" data-i18n="generateBtn">
+                    生成子集字体
+                </button>
+            <div class="loading" id="loading" style="display: none;">
+                <div class="spinner"></div>
+                <div class="progress-container">
+                    <span data-i18n="processingFont">正在处理字体...</span>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressBar"></div>
+                    </div>
+                    <span class="progress-text" id="progressText">0%</span>
+                </div>
+                <p id="processingDetail" class="processing-detail" aria-live="polite"></p>
+                <div class="log-container" id="logContainer">
+                    <div class="log-header">
+                        <span data-i18n="processingLog">处理日志</span>
+                        <button class="btn-clear-log" onclick="clearLog()" data-i18n="clearLog">清空</button>
+                    </div>
+                    <div class="log-content" id="logContent"></div>
+                </div>
+            </div>
+        </section>
+
+            <!-- 结果展示区域 -->
+            <section class="result-section" id="resultSection" style="display: none;">
+                <h2 data-i18n="resultTitle">生成结果</h2>
+                <div class="result-summary">
+                    <p data-i18n="resultSummary" data-i18n-params='{"fileCount": 0, "totalChars": 0}'>成功生成 0 个字体文件，共包含 0 个字符</p>
+                </div>
+                <div class="result-grid">
+                    <div class="result-item">
+                        <h4 data-i18n="cssCode">CSS 代码</h4>
+                        <pre id="cssCode"></pre>
+                        <button class="btn-secondary" onclick="copyToClipboard('cssCode')" data-i18n="copyCss">复制 CSS</button>
+                    </div>
+                    <div class="result-item">
+                        <h4 data-i18n="fileList">文件列表</h4>
+                        <div class="file-list" id="fileList"></div>
+                    </div>
+                </div>
+                <div class="download-section">
+                    <button class="btn-primary" id="downloadBtn" onclick="downloadPackage()" data-i18n="downloadPackage">
+                        下载完整包
+                    </button>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p data-i18n="footer">基于 WASM 技术的字体子集化工具</p>
+        </footer>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "opentype": "https://esm.sh/opentype.js@1.3.4",
+            "jszip": "https://esm.sh/jszip@3.10.1",
+            "file-saver": "https://esm.sh/file-saver@2.0.5?default"
+        }
+    }
+    </script>
+    <script type="module" src="i18n.js"></script>
+    <script type="module" src="app.js"></script>
+</body>
+</html>

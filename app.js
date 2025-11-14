@@ -1,0 +1,1419 @@
+// 导入依赖
+import * as opentype from 'opentype';
+import JSZip from 'jszip';
+import saveAs from 'file-saver';
+import { i18nManager } from './i18n.js';
+
+// 全局变量
+let currentFont = null;
+let fontBuffer = null;
+let fontFileName = '';
+let availableCodepoints = [];
+let fontWorker = null;
+let fontInfo = null; // 存储字体信息（从 Worker 获取）
+
+let processingDetailState = null;
+let processingLogs = [];
+const processingDetailMessages = {
+    analyzing: {
+        zh: '正在分析字体...',
+        en: 'Analyzing font...'
+    },
+    grouping: {
+        zh: '正在按 Unicode 范围分组...',
+        en: 'Grouping codepoints...'
+    },
+    creatingSubset: {
+        zh: '正在创建第 {current}/{total} 个子集...',
+        en: 'Creating subset {current}/{total}...'
+    },
+    packagingFiles: {
+        zh: '正在打包字体文件...',
+        en: 'Packaging font files...'
+    },
+    zipGenerating: {
+        zh: '正在生成 ZIP 包...',
+        en: 'Generating ZIP bundle...'
+    },
+    fontLoaded: {
+        zh: '字体文件加载完成',
+        en: 'Font file loaded'
+    },
+    analysisComplete: {
+        zh: '字体分析完成，找到 {count} 个字符',
+        en: 'Font analysis complete, found {count} characters'
+    },
+    groupingComplete: {
+        zh: '分组完成，共 {count} 组',
+        en: 'Grouping complete, {count} groups'
+    },
+    subsetCreated: {
+        zh: '子集 {current}/{total} 创建完成',
+        en: 'Subset {current}/{total} created'
+    },
+    cssGenerated: {
+        zh: 'CSS 代码生成完成',
+        en: 'CSS code generated'
+    },
+    zipComplete: {
+        zh: 'ZIP 包生成完成',
+        en: 'ZIP bundle generated'
+    },
+    downloadComplete: {
+        zh: '下载完成',
+        en: 'Download complete'
+    },
+    fontParseError: {
+        zh: '字体文件解析失败: {error}',
+        en: 'Font file parsing failed: {error}'
+    },
+    workerError: {
+        zh: 'Worker 处理错误: {error}',
+        en: 'Worker processing error: {error}'
+    },
+    subsetError: {
+        zh: '子集生成失败: {error}',
+        en: 'Subset generation failed: {error}'
+    },
+    packageError: {
+        zh: '打包失败: {error}',
+        en: 'Package failed: {error}'
+    }
+};
+
+function formatProcessingDetail(key, params = {}) {
+    const templates = processingDetailMessages[key];
+    if (!templates) return '';
+    const lang = i18nManager.getLanguage();
+    const template = templates[lang] || templates.en || '';
+    return template.replace(/\{(\w+)\}/g, (_, name) => {
+        return params[name] !== undefined ? params[name] : '';
+    });
+}
+
+function renderProcessingDetail() {
+    const detailEl = document.getElementById('processingDetail');
+    if (!detailEl) return;
+    if (processingDetailState) {
+        detailEl.textContent = formatProcessingDetail(processingDetailState.key, processingDetailState.params);
+    } else {
+        detailEl.textContent = '';
+    }
+}
+
+function setProcessingDetail(key, params = {}) {
+    if (!key) {
+        processingDetailState = null;
+    } else {
+        processingDetailState = { key, params };
+    }
+    renderProcessingDetail();
+}
+
+// 添加日志记录功能
+function addLog(key, params = {}, type = 'info') {
+    const timestamp = new Date();
+    const timeStr = timestamp.toLocaleTimeString('zh-CN', { 
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        fractionalSecondDigits: 3
+    });
+    
+    const message = formatProcessingDetail(key, params);
+    const logEntry = {
+        time: timeStr,
+        message: message,
+        type: type, // 'info', 'success', 'warning', 'error'
+        key: key,
+        params: params
+    };
+    
+    processingLogs.push(logEntry);
+    renderLog();
+    
+    // 自动滚动到底部
+    const logContent = document.getElementById('logContent');
+    if (logContent) {
+        setTimeout(() => {
+            logContent.scrollTop = logContent.scrollHeight;
+        }, 0);
+    }
+}
+
+// 渲染日志
+function renderLog() {
+    const logContent = document.getElementById('logContent');
+    if (!logContent) return;
+    
+    if (processingLogs.length === 0) {
+        logContent.innerHTML = '<div class="log-empty" data-i18n="noLogs">暂无日志</div>';
+        return;
+    }
+    
+    logContent.innerHTML = processingLogs.map(log => {
+        const typeClass = `log-${log.type}`;
+        return `
+            <div class="log-entry ${typeClass}">
+                <span class="log-time">[${log.time}]</span>
+                <span class="log-message">${log.message}</span>
+            </div>
+        `;
+    }).join('');
+}
+
+// 清空日志
+function clearLog() {
+    processingLogs = [];
+    renderLog();
+}
+
+// 暴露到全局
+window.clearLog = clearLog;
+
+// 初始化 Web Worker
+function initFontWorker() {
+    if (!fontWorker) {
+        try {
+            fontWorker = new Worker('font-worker.js');
+            
+            // 处理 Worker 消息
+            fontWorker.addEventListener('message', function(e) {
+                const { type, data } = e.data;
+                
+                switch (type) {
+                    case 'fontParsed':
+                        handleFontParsed(data);
+                        break;
+                    case 'codepointsSplit':
+                        handleCodepointsSplit(data);
+                        break;
+                    case 'subsetCreated':
+                        handleSubsetCreated(data);
+                        break;
+                    case 'error':
+                        handleWorkerError(data);
+                        break;
+                }
+            });
+            
+            fontWorker.addEventListener('error', function(error) {
+                console.error('Worker 错误:', error);
+                const errorMsg = error.message || error.filename || '未知错误';
+                addLog('workerError', { error: errorMsg }, 'error');
+                console.warn('Worker 初始化失败，将使用主线程处理。错误详情:', error);
+                // 显示 alert 提示用户
+                alert(i18nManager.t('workerInitFailed', { error: errorMsg }));
+                fontWorker = null;
+            });
+        } catch (error) {
+            console.error('无法创建 Worker:', error);
+            // 如果 Worker 不可用，继续使用主线程
+        }
+    }
+}
+
+// 处理字体解析完成
+let fontParseResolve = null;
+function handleFontParsed(data) {
+    fontInfo = data.fontInfo;
+    availableCodepoints = data.codepoints;
+    
+    // 更新 UI
+    displayFontInfo();
+    showSections();
+    updatePreview();
+    
+    // 显示检测到的字符数量
+    const detectedCharsEl = document.getElementById('detectedChars');
+    if (detectedCharsEl) {
+        detectedCharsEl.textContent = availableCodepoints.length;
+        const parent = detectedCharsEl.parentElement;
+        if (parent && parent.hasAttribute('data-i18n')) {
+            parent.setAttribute('data-i18n-params', JSON.stringify({ count: availableCodepoints.length }));
+            const translatedText = i18nManager.t('detectedChars', { count: availableCodepoints.length });
+            parent.innerHTML = translatedText.replace('{count}', `<span id="detectedChars">${availableCodepoints.length}</span>`);
+        }
+    }
+    
+    addLog('analysisComplete', { count: availableCodepoints.length }, 'success');
+    
+    if (fontParseResolve) {
+        fontParseResolve();
+        fontParseResolve = null;
+    }
+}
+
+// 处理码点分割完成
+let splitResolve = null;
+let splitGroups = null;
+function handleCodepointsSplit(data) {
+    splitGroups = data.groups;
+    addLog('groupingComplete', { count: splitGroups.length }, 'success');
+    
+    if (splitResolve) {
+        splitResolve(splitGroups);
+        splitResolve = null;
+    }
+}
+
+// 处理子集创建完成
+let subsetResolves = new Map();
+let completedSubsets = 0;
+let totalSubsets = 0;
+function handleSubsetCreated(data) {
+    const { buffer, index, total } = data;
+    addLog('subsetCreated', { current: index + 1, total: total }, 'success');
+    
+    // 更新完成的子集数量
+    completedSubsets++;
+    totalSubsets = total;
+    
+    // 实时更新处理详情文字
+    setProcessingDetail('creatingSubset', { current: completedSubsets, total: totalSubsets });
+    
+    if (subsetResolves.has(index)) {
+        const resolve = subsetResolves.get(index);
+        resolve(buffer);
+        subsetResolves.delete(index);
+    }
+}
+
+// 处理 Worker 错误
+function handleWorkerError(data) {
+    console.error('Worker 错误:', data);
+    addLog('workerError', { error: data.message }, 'error');
+    
+    // 如果有等待的 Promise，reject 它们
+    if (fontParseResolve) {
+        fontParseResolve = null;
+    }
+    if (splitResolve) {
+        splitResolve = null;
+    }
+    subsetResolves.forEach((resolve) => {
+        // 这里应该 reject，但为了简化，我们使用一个错误处理
+    });
+    subsetResolves.clear();
+}
+
+// 初始化
+document.addEventListener('DOMContentLoaded', function() {
+    // 初始化国际化
+    i18nManager.updatePage();
+    updateSelectOptions();
+    // 设置语言按钮初始状态
+    const currentLang = i18nManager.getLanguage();
+    document.getElementById('langZh').classList.toggle('active', currentLang === 'zh');
+    document.getElementById('langEn').classList.toggle('active', currentLang === 'en');
+    // 初始化 Worker
+    initFontWorker();
+    initializeEventListeners();
+});
+
+// 更新 select 选项的文本
+function updateSelectOptions() {
+    // 更新所有 select 中的 option 文本
+    document.querySelectorAll('select option[data-i18n]').forEach(option => {
+        const key = option.getAttribute('data-i18n');
+        option.textContent = i18nManager.t(key);
+    });
+}
+
+// 语言切换函数（暴露到全局）
+window.switchLanguage = function(lang) {
+    if (i18nManager.setLanguage(lang)) {
+        updateSelectOptions();
+        // 更新语言按钮状态
+        document.getElementById('langZh').classList.toggle('active', lang === 'zh');
+        document.getElementById('langEn').classList.toggle('active', lang === 'en');
+        // 更新动态内容
+        updateDynamicContent();
+    }
+};
+
+// 更新动态内容
+function updateDynamicContent() {
+    // 更新检测到的字符数
+    const detectedCharsEl = document.getElementById('detectedChars');
+    if (detectedCharsEl && availableCodepoints.length > 0) {
+        detectedCharsEl.textContent = availableCodepoints.length;
+        const parent = detectedCharsEl.closest('[data-i18n]');
+        if (parent) {
+            parent.setAttribute('data-i18n-params', JSON.stringify({ count: availableCodepoints.length }));
+            i18nManager.updatePage();
+        }
+    }
+
+    // 更新结果摘要
+    if (window.fileInfo) {
+        const resultSummary = document.querySelector('.result-summary p');
+        if (resultSummary) {
+            resultSummary.setAttribute('data-i18n-params', JSON.stringify({
+                fileCount: window.fileInfo.fileCount,
+                totalChars: window.fileInfo.totalChars
+            }));
+            i18nManager.updatePage();
+        }
+    }
+
+        // 保证语言切换时能刷新处理详情
+        renderProcessingDetail();
+        // 重新渲染日志以更新语言
+        renderLog();
+    }
+
+function initializeEventListeners() {
+    // 文件上传事件
+    const fontFileInput = document.getElementById('fontFile');
+    const uploadArea = document.getElementById('uploadArea');
+
+    fontFileInput.addEventListener('change', handleFileSelect);
+
+    // 拖放事件
+    uploadArea.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        uploadArea.classList.add('dragover');
+    });
+
+    uploadArea.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        uploadArea.classList.remove('dragover');
+    });
+
+    uploadArea.addEventListener('drop', function(e) {
+        e.preventDefault();
+        uploadArea.classList.remove('dragover');
+        const files = e.dataTransfer.files;
+        if (files.length > 0) {
+            handleFontFile(files[0]);
+        }
+    });
+
+    // 预览文本输入事件
+    const previewText = document.getElementById('previewText');
+    previewText.addEventListener('input', updatePreview);
+
+    // 子集策略变化事件
+    const subsetStrategy = document.getElementById('subsetStrategy');
+    subsetStrategy.addEventListener('change', handleSubsetStrategyChange);
+
+    // 分割策略变化事件
+    const splitStrategy = document.getElementById('splitStrategy');
+    splitStrategy.addEventListener('change', handleSplitStrategyChange);
+
+    // 配置变化事件
+    document.getElementById('fontWeight').addEventListener('change', updatePreview);
+    document.getElementById('fontStyle').addEventListener('change', updatePreview);
+}
+
+function handleFileSelect(e) {
+    const file = e.target.files[0];
+    if (file) {
+        handleFontFile(file);
+    }
+}
+
+function handleFontFile(file) {
+    const validTypes = ['font/ttf', 'font/otf', 'application/font-woff', 'application/font-woff2'];
+    const validExtensions = ['.ttf', '.otf', '.woff', '.woff2'];
+
+    const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+
+    if (!validExtensions.includes(fileExtension) && !validTypes.includes(file.type)) {
+        alert(i18nManager.t('invalidFontFile'));
+        return;
+    }
+
+    fontFileName = file.name.replace(fileExtension, '');
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        fontBuffer = e.target.result;
+        loadFont(fontBuffer);
+    };
+    reader.readAsArrayBuffer(file);
+}
+
+function loadFont(buffer) {
+    addLog('fontLoaded');
+    
+    // 如果 Worker 可用，使用 Worker 处理
+    if (fontWorker) {
+        // 保存 buffer 的副本，因为 Transferable Objects 会转移所有权
+        fontBuffer = buffer.slice(0);
+        fontWorker.postMessage({
+            type: 'parseFont',
+            data: { buffer: buffer }
+        }, [buffer]); // 转移 ArrayBuffer 的所有权以提升性能
+    } else {
+        // 降级到主线程处理
+        try {
+            currentFont = opentype.parse(buffer);
+            analyzeFontCharacters();
+            displayFontInfo();
+            showSections();
+            updatePreview();
+        } catch (error) {
+            console.error('字体加载失败:', error);
+            addLog('fontParseError', { error: error.message }, 'error');
+            alert(i18nManager.t('fontParseError'));
+        }
+    }
+}
+
+function analyzeFontCharacters() {
+    if (!currentFont) return;
+
+    availableCodepoints = [];
+    console.log('开始分析字体字符，总字形数:', currentFont.glyphs.length);
+
+    // 分析字体中的所有字符
+    for (let i = 0; i < currentFont.glyphs.length; i++) {
+        const glyph = currentFont.glyphs.get(i);
+        if (glyph.unicode !== undefined) {
+            availableCodepoints.push(glyph.unicode);
+        }
+    }
+
+    console.log('分析完成，找到字符数:', availableCodepoints.length);
+    addLog('analysisComplete', { count: availableCodepoints.length }, 'success');
+    // 显示检测到的字符数量
+    const detectedCharsEl = document.getElementById('detectedChars');
+    if (detectedCharsEl) {
+        detectedCharsEl.textContent = availableCodepoints.length;
+        // 更新父元素的国际化参数并重新渲染
+        const parent = detectedCharsEl.parentElement;
+        if (parent && parent.hasAttribute('data-i18n')) {
+            parent.setAttribute('data-i18n-params', JSON.stringify({ count: availableCodepoints.length }));
+            // 获取翻译文本并替换数字部分
+            const translatedText = i18nManager.t('detectedChars', { count: availableCodepoints.length });
+            // 将 {count} 占位符替换为实际的 span 元素
+            parent.innerHTML = translatedText.replace('{count}', `<span id="detectedChars">${availableCodepoints.length}</span>`);
+        }
+    }
+}
+
+function displayFontInfo() {
+    // 优先使用从 Worker 获取的字体信息
+    if (fontInfo) {
+        document.getElementById('fontName').textContent = fontInfo.fullName || i18nManager.t('unknownFont');
+        document.getElementById('fontFamily').textContent = fontInfo.familyName || i18nManager.t('unknownFamily');
+        document.getElementById('fontFormat').textContent = getFontFormat();
+        document.getElementById('totalGlyphs').textContent = fontInfo.totalGlyphs || 0;
+    } else if (currentFont) {
+        // 降级到主线程的字体信息
+        document.getElementById('fontName').textContent = currentFont.names.fullName ? currentFont.names.fullName.en : i18nManager.t('unknownFont');
+        document.getElementById('fontFamily').textContent = currentFont.names.fontFamily ? currentFont.names.fontFamily.en : i18nManager.t('unknownFamily');
+        document.getElementById('fontFormat').textContent = getFontFormat();
+        document.getElementById('totalGlyphs').textContent = currentFont.glyphs.length;
+    }
+}
+
+function getFontFormat() {
+    if (!fontBuffer) return i18nManager.t('unknownFormat');
+
+    const view = new DataView(fontBuffer);
+    const signature = view.getUint32(0, false);
+
+    if (signature === 0x774F4646) return 'WOFF';
+    if (signature === 0x774F4632) return 'WOFF2';
+    if (signature === 0x00010000 || signature === 0x74727565) return 'TTF/OTF';
+
+    return i18nManager.t('unknownFormat');
+}
+
+function showSections() {
+    document.getElementById('previewSection').style.display = 'block';
+    document.getElementById('configSection').style.display = 'block';
+    document.getElementById('actionSection').style.display = 'block';
+}
+
+function updatePreview() {
+    if (!fontBuffer) return;
+
+    const previewText = document.getElementById('previewText').value;
+    const fontWeight = document.getElementById('fontWeight').value;
+    const fontStyle = document.getElementById('fontStyle').value;
+
+    const previewDisplay = document.getElementById('previewDisplay');
+
+    // 创建字体 URL
+    const fontUrl = URL.createObjectURL(new Blob([fontBuffer]));
+
+    // 获取字体名称
+    const fontFamilyName = fontInfo ? fontInfo.familyName : 
+                          (currentFont && currentFont.names.fontFamily ? currentFont.names.fontFamily.en : 'CustomFont');
+
+    // 应用字体样式
+    previewDisplay.style.fontFamily = `'${fontFamilyName}', sans-serif`;
+    previewDisplay.style.fontWeight = fontWeight;
+    previewDisplay.style.fontStyle = fontStyle;
+
+    // 创建字体定义
+    const fontFace = `
+        @font-face {
+            font-family: '${fontFamilyName}';
+            src: url('${fontUrl}') format('${getFontFormat().toLowerCase()}');
+            font-weight: ${fontWeight};
+            font-style: ${fontStyle};
+        }
+    `;
+
+    // 添加字体到页面
+    const style = document.createElement('style');
+    style.textContent = fontFace;
+    document.head.appendChild(style);
+
+    previewDisplay.textContent = previewText || i18nManager.t('previewDefaultText');
+
+    // 清理 URL
+    setTimeout(() => URL.revokeObjectURL(fontUrl), 1000);
+}
+
+function handleSubsetStrategyChange() {
+    const strategy = document.getElementById('subsetStrategy').value;
+    const customRangeGroup = document.getElementById('customRangeGroup');
+
+    if (strategy === 'custom') {
+        customRangeGroup.style.display = 'block';
+    } else {
+        customRangeGroup.style.display = 'none';
+    }
+}
+
+function handleSplitStrategyChange() {
+    const strategy = document.getElementById('splitStrategy').value;
+    const splitCountGroup = document.getElementById('splitCountGroup');
+
+    if (strategy === 'byCount') {
+        splitCountGroup.style.display = 'block';
+    } else {
+        splitCountGroup.style.display = 'none';
+    }
+}
+
+async function generateSubset() {
+    // 检查字体是否已加载（支持 Worker 和主线程两种方式）
+    const isFontLoaded = (fontBuffer && (currentFont || fontInfo || availableCodepoints.length > 0));
+    if (!isFontLoaded) {
+        alert(i18nManager.t('uploadFontFirst'));
+        return;
+    }
+
+    // 清空之前的日志
+    clearLog();
+    addLog('analyzing');
+
+    const strategy = document.getElementById('subsetStrategy').value;
+    const splitStrategy = document.getElementById('splitStrategy').value;
+    const outputFormat = document.getElementById('outputFormat').value;
+    const fontWeight = document.getElementById('fontWeight').value;
+    const fontStyle = document.getElementById('fontStyle').value;
+
+    console.log('开始生成子集，策略:', strategy, '分割策略:', splitStrategy);
+    showLoading(true);
+    setProcessingDetail('analyzing');
+
+    try {
+        // 根据策略获取要包含的码点
+        const allCodepoints = getCodepointsByStrategy(strategy);
+        console.log('获取到码点数量:', allCodepoints.length);
+
+        if (allCodepoints.length === 0) {
+            alert(i18nManager.t('noCharsFound'));
+            setProcessingDetail();
+            return;
+        }
+
+        showLoading(true, 10);
+        setProcessingDetail('grouping');
+        addLog('grouping');
+
+        // 根据分割策略分割码点
+        let codepointGroups;
+        if (fontWorker) {
+            // 使用 Worker 分割码点
+            const splitCount = splitStrategy === 'byCount' ? parseInt(document.getElementById('splitCount').value) : undefined;
+            codepointGroups = await new Promise((resolve) => {
+                splitResolve = resolve;
+                fontWorker.postMessage({
+                    type: 'splitCodepoints',
+                    data: {
+                        codepoints: allCodepoints,
+                        strategy: splitStrategy,
+                        splitCount: splitCount
+                    }
+                });
+            });
+        } else {
+            // 降级到主线程处理
+            codepointGroups = await splitCodepointsAsync(allCodepoints, splitStrategy);
+        }
+        console.log('分割成组数:', codepointGroups.length);
+
+        showLoading(true, 30);
+
+        // 创建多个子集字体
+        const fontFiles = [];
+        const totalGroups = codepointGroups.length;
+        console.log('开始创建字体文件，总组数:', totalGroups);
+
+        // 并行创建子集字体（使用 Worker 时）
+        if (fontWorker) {
+            // 重置计数器
+            completedSubsets = 0;
+            totalSubsets = totalGroups;
+            
+            // 设置初始处理详情
+            setProcessingDetail('creatingSubset', { current: 0, total: totalGroups });
+            addLog('creatingSubset', { current: 0, total: totalGroups });
+            
+            // 使用 Worker 并行处理
+            const subsetPromises = codepointGroups.map((group, i) => {
+                return new Promise((resolve) => {
+                    subsetResolves.set(i, resolve);
+                    
+                    fontWorker.postMessage({
+                        type: 'createSubset',
+                        data: {
+                            subsetCodepoints: group,
+                            outputFormat: outputFormat,
+                            index: i,
+                            total: totalGroups
+                        }
+                    });
+                });
+            });
+            
+            // 等待所有子集创建完成
+            const subsetBuffers = await Promise.all(subsetPromises);
+            
+            // 按顺序组装字体文件
+            for (let i = 0; i < totalGroups; i++) {
+                fontFiles.push({
+                    buffer: subsetBuffers[i],
+                    codepoints: codepointGroups[i],
+                    index: i
+                });
+                
+                // 更新进度
+                const progress = 30 + Math.floor((i + 1) / totalGroups * 60);
+                showLoading(true, progress);
+            }
+        } else {
+            // 降级到主线程顺序处理
+            for (let i = 0; i < totalGroups; i++) {
+                console.log(`创建字体文件 ${i + 1}/${totalGroups}`);
+                setProcessingDetail('creatingSubset', { current: i + 1, total: totalGroups });
+                addLog('creatingSubset', { current: i + 1, total: totalGroups });
+                const subsetBuffer = await createSubsetFont(codepointGroups[i], outputFormat);
+                fontFiles.push({
+                    buffer: subsetBuffer,
+                    codepoints: codepointGroups[i],
+                    index: i
+                });
+                addLog('subsetCreated', { current: i + 1, total: totalGroups }, 'success');
+
+                // 更新进度
+                const progress = 30 + Math.floor((i + 1) / totalGroups * 60);
+                console.log(`进度更新: ${progress}%`);
+                showLoading(true, progress);
+            }
+        }
+
+        showLoading(true, 95);
+
+        // 生成 CSS 和文件信息
+        const cssCode = generateCSS(fontFiles, outputFormat, fontWeight, fontStyle);
+        const fileInfo = generateFileInfo(fontFiles);
+        addLog('cssGenerated', {}, 'success');
+
+        // 显示结果
+        displayResults(cssCode, fileInfo, fontFiles);
+        setProcessingDetail();
+
+        showLoading(true, 100);
+
+    } catch (error) {
+        console.error('子集生成失败:', error);
+        addLog('subsetError', { error: error.message }, 'error');
+        alert(i18nManager.t('subsetError', { error: error.message }));
+    } finally {
+        setTimeout(() => showLoading(false), 500);
+    }
+}
+
+function getCodepointsByStrategy(strategy) {
+    switch (strategy) {
+        case 'all':
+            return [...availableCodepoints];
+
+        case 'common':
+            return availableCodepoints.filter(codepoint => {
+                // 基本拉丁字母、数字、标点符号
+                return (codepoint >= 0x0020 && codepoint <= 0x007E) || // 基本拉丁
+                       (codepoint >= 0x00A0 && codepoint <= 0x00FF) || // 拉丁补充
+                       (codepoint >= 0x2000 && codepoint <= 0x206F);   // 常用标点
+            });
+
+        case 'chinese':
+            return availableCodepoints.filter(codepoint => {
+                // 中文字符范围
+                return (codepoint >= 0x4E00 && codepoint <= 0x9FFF) || // 基本汉字
+                       (codepoint >= 0x3400 && codepoint <= 0x4DBF) || // 扩展A
+                       (codepoint >= 0x20000 && codepoint <= 0x2A6DF); // 扩展B
+            });
+
+        case 'custom':
+            const customRange = document.getElementById('customRange').value;
+            return parseCustomRange(customRange);
+
+        default:
+            return [...availableCodepoints];
+    }
+}
+
+function parseCustomRange(rangeString) {
+    if (!rangeString.trim()) return [];
+
+    const ranges = rangeString.split(',').map(r => r.trim());
+    const result = [];
+
+    for (const range of ranges) {
+        if (range.includes('-')) {
+            // 处理范围 U+XXXX-YYYY
+            const [startStr, endStr] = range.split('-');
+            const start = parseInt(startStr.replace('U+', ''), 16);
+            const end = parseInt(endStr.replace('U+', ''), 16);
+
+            for (let i = start; i <= end; i++) {
+                if (availableCodepoints.includes(i)) {
+                    result.push(i);
+                }
+            }
+        } else {
+            // 处理单个字符 U+XXXX
+            const codepoint = parseInt(range.replace('U+', ''), 16);
+            if (availableCodepoints.includes(codepoint)) {
+                result.push(codepoint);
+            }
+        }
+    }
+
+    return [...new Set(result)]; // 去重
+}
+
+function splitCodepoints(codepoints, strategy) {
+    switch (strategy) {
+        case 'single':
+            return [codepoints];
+
+        case 'byRange':
+            return splitByUnicodeRange(codepoints);
+
+        case 'byCount':
+            const splitCount = parseInt(document.getElementById('splitCount').value);
+            return splitByCharacterCount(codepoints, splitCount);
+
+        default:
+            return [codepoints];
+    }
+}
+
+async function splitCodepointsAsync(codepoints, strategy) {
+    if (strategy === 'byRange') {
+        // 对于按范围分割，使用异步分批处理
+        return await splitByUnicodeRangeAsync(codepoints);
+    } else {
+        // 其他策略使用原来的同步方法，但通过 setTimeout 延迟执行
+        return new Promise((resolve) => {
+            setTimeout(() => {
+                const result = splitCodepoints(codepoints, strategy);
+                resolve(result);
+            }, 0);
+        });
+    }
+}
+
+// 异步版本的 Unicode 范围分割，避免阻塞主线程
+async function splitByUnicodeRangeAsync(codepoints) {
+    if (codepoints.length === 0) return [];
+
+    console.log('开始按 Unicode 范围分割，字符数:', codepoints.length);
+    
+    return new Promise((resolve) => {
+        // 先进行排序（对于大量数据，排序也可能阻塞，所以也异步处理）
+        setTimeout(() => {
+            const sortedCodepoints = [...codepoints].sort((a, b) => a - b);
+            console.log('排序完成，开始分组');
+            
+            // 分批处理分组逻辑，避免阻塞主线程
+            const groups = [];
+            let currentGroup = [sortedCodepoints[0]];
+            const blockSize = 1024;
+            let processedCount = 1;
+            const totalCount = sortedCodepoints.length;
+            const batchSize = 1000; // 每批处理 1000 个码点
+            
+            function processBatch(startIndex) {
+                const endIndex = Math.min(startIndex + batchSize, totalCount);
+                
+                for (let i = startIndex; i < endIndex; i++) {
+                    const currentCodepoint = sortedCodepoints[i];
+                    const lastCodepoint = currentGroup[currentGroup.length - 1];
+                    
+                    const currentBlock = Math.floor(currentCodepoint / blockSize);
+                    const lastBlock = Math.floor(lastCodepoint / blockSize);
+                    
+                    // 如果码点连续或在同一 Unicode 块内，则放在同一组
+                    if (currentCodepoint === lastCodepoint + 1 || currentBlock === lastBlock) {
+                        currentGroup.push(currentCodepoint);
+                    } else {
+                        groups.push(currentGroup);
+                        currentGroup = [currentCodepoint];
+                    }
+                    processedCount++;
+                }
+                
+                // 如果还有未处理的数据，继续分批处理
+                if (endIndex < totalCount) {
+                    // 使用 setTimeout 让出主线程，避免阻塞
+                    setTimeout(() => processBatch(endIndex), 0);
+                } else {
+                    // 处理完成，添加最后一组
+                    if (currentGroup.length > 0) {
+                        groups.push(currentGroup);
+                    }
+                    console.log('分割完成，组数:', groups.length);
+                    resolve(groups);
+                }
+            }
+            
+            // 开始处理第一批
+            processBatch(1);
+        }, 0);
+    });
+}
+
+// 保留同步版本作为备用（用于非异步场景）
+function splitByUnicodeRange(codepoints) {
+    if (codepoints.length === 0) return [];
+
+    console.log('开始按 Unicode 范围分割，字符数:', codepoints.length);
+    const sortedCodepoints = [...codepoints].sort((a, b) => a - b);
+    const groups = [];
+    let currentGroup = [sortedCodepoints[0]];
+
+    for (let i = 1; i < sortedCodepoints.length; i++) {
+        const currentCodepoint = sortedCodepoints[i];
+        const lastCodepoint = currentGroup[currentGroup.length - 1];
+
+        // 优化分组逻辑：使用更大的 Unicode 块范围（1024 个码点）
+        const blockSize = 1024;
+        const currentBlock = Math.floor(currentCodepoint / blockSize);
+        const lastBlock = Math.floor(lastCodepoint / blockSize);
+
+        // 如果码点连续或在同一 Unicode 块内，则放在同一组
+        if (currentCodepoint === lastCodepoint + 1 || currentBlock === lastBlock) {
+            currentGroup.push(currentCodepoint);
+        } else {
+            groups.push(currentGroup);
+            currentGroup = [currentCodepoint];
+        }
+    }
+
+    if (currentGroup.length > 0) {
+        groups.push(currentGroup);
+    }
+
+    console.log('分割完成，组数:', groups.length);
+    return groups;
+}
+
+function splitByCharacterCount(codepoints, maxCount) {
+    const groups = [];
+    for (let i = 0; i < codepoints.length; i += maxCount) {
+        groups.push(codepoints.slice(i, i + maxCount));
+    }
+    return groups;
+}
+
+function createSubsetFont(codepoints, outputFormat) {
+    return new Promise((resolve, reject) => {
+        try {
+            console.log('开始创建子集字体，字符数:', codepoints.length);
+
+            if (!currentFont) {
+                throw new Error('字体未加载');
+            }
+
+            // 创建码点集合，用于快速查找
+            const codepointSet = new Set(codepoints);
+            
+            // 收集需要包含的字形
+            const subsetGlyphs = [];
+            const glyphIndexMap = new Map(); // 旧索引到新索引的映射
+            
+            // 必须包含的字形：.notdef (索引 0)
+            const notdefGlyph = currentFont.glyphs.get(0);
+            subsetGlyphs.push(notdefGlyph);
+            glyphIndexMap.set(0, 0);
+            
+            // 遍历所有字形，找到匹配的码点
+            // 对于大量字形，分批处理以避免阻塞
+            const totalGlyphs = currentFont.glyphs.length;
+            const batchSize = 1000; // 每批处理 1000 个字形
+            
+            function processBatch(startIndex) {
+                const endIndex = Math.min(startIndex + batchSize, totalGlyphs);
+                
+                for (let i = startIndex; i < endIndex; i++) {
+                    const glyph = currentFont.glyphs.get(i);
+                    
+                    // 检查字形是否有对应的 Unicode 码点
+                    if (glyph.unicode !== undefined && codepointSet.has(glyph.unicode)) {
+                        subsetGlyphs.push(glyph);
+                        glyphIndexMap.set(i, subsetGlyphs.length - 1);
+                    }
+                }
+                
+                // 如果还有未处理的字形，继续分批处理
+                if (endIndex < totalGlyphs) {
+                    // 使用 setTimeout 让出主线程，避免阻塞
+                    setTimeout(() => processBatch(endIndex), 0);
+                } else {
+                    // 所有字形处理完成，继续创建字体
+                    console.log(`子集包含 ${subsetGlyphs.length} 个字形（原始字体有 ${totalGlyphs} 个字形）`);
+                    createFontObject();
+                }
+            }
+            
+            // 开始处理第一批
+            processBatch(1);
+            
+            function createFontObject() {
+                // 使用 opentype.js 创建新的字体对象
+                const fontFamily = currentFont.names.fontFamily ? currentFont.names.fontFamily.en : 'SubsetFont';
+                const fullName = currentFont.names.fullName ? currentFont.names.fullName.en : fontFamily;
+                
+                console.log('正在创建字体对象...');
+                
+                // 创建新的字体对象
+                const subsetFont = new opentype.Font({
+                    familyName: fontFamily,
+                    styleName: currentFont.names.fontSubfamily ? currentFont.names.fontSubfamily.en : 'Regular',
+                    unitsPerEm: currentFont.unitsPerEm || 1000,
+                    ascender: currentFont.ascender || 800,
+                    descender: currentFont.descender || -200,
+                    glyphs: subsetGlyphs
+                });
+
+                console.log('字体对象创建完成，开始导出为二进制数据...');
+                
+                // 将导出操作放在下一个事件循环中，避免阻塞
+                setTimeout(() => {
+                    try {
+                        // 导出字体为二进制数据
+                        let fontData;
+                        
+                        if (outputFormat === 'ttf') {
+                            // 导出为 TTF 格式
+                            fontData = subsetFont.toArrayBuffer();
+                            console.log(`子集字体创建完成，TTF 大小: ${(fontData.byteLength / 1024).toFixed(2)} KB`);
+            } else if (outputFormat === 'otf') {
+                // opentype.js 不支持直接导出 OTF，导出为 TTF
+                console.warn(i18nManager.t('otfNotSupported'));
+                fontData = subsetFont.toArrayBuffer();
+                        } else {
+                // WOFF/WOFF2 格式需要额外的转换库
+                // 暂时导出为 TTF，然后提示用户
+                console.warn(i18nManager.t('woff2NotSupported'));
+                fontData = subsetFont.toArrayBuffer();
+                        }
+
+                        resolve(fontData);
+                    } catch (error) {
+                        console.error('导出字体失败:', error);
+                        reject(error);
+                    }
+                }, 0);
+            }
+
+        } catch (error) {
+            console.error('创建子集字体失败:', error);
+            console.error('错误详情:', error.stack);
+            
+            // 如果子集化失败，返回原始字体作为降级方案
+            console.warn('使用原始字体作为降级方案');
+            const fontData = new Uint8Array(fontBuffer);
+            resolve(fontData.buffer);
+        }
+    });
+}
+
+function generateCSS(fontFiles, format, fontWeight, fontStyle) {
+    const fontFamily = fontInfo ? fontInfo.familyName : 
+                      (currentFont && currentFont.names.fontFamily ? currentFont.names.fontFamily.en : 'SubsetFont');
+    let css = '';
+
+    fontFiles.forEach((file, index) => {
+        const fontUrl = `./fonts/${fontFileName}-subset-${index + 1}.${format}`;
+        const unicodeRange = generateUnicodeRange(file.codepoints);
+
+        css += `@font-face {
+    font-family: '${fontFamily}';
+    src: url('${fontUrl}') format('${format}');
+    font-weight: ${fontWeight};
+    font-style: ${fontStyle};
+    unicode-range: ${unicodeRange};
+    font-display: swap;
+}
+
+`;
+    });
+
+    return css.trim();
+}
+
+function generateUnicodeRange(codepoints) {
+    if (codepoints.length === 0) return 'U+0000-FFFF';
+
+    // 对码点进行排序
+    const sortedCodepoints = [...codepoints].sort((a, b) => a - b);
+
+    // 生成 Unicode range
+    const ranges = [];
+    let start = sortedCodepoints[0];
+    let end = start;
+
+    for (let i = 1; i < sortedCodepoints.length; i++) {
+        if (sortedCodepoints[i] === end + 1) {
+            end = sortedCodepoints[i];
+        } else {
+            if (start === end) {
+                ranges.push(`U+${start.toString(16).toUpperCase().padStart(4, '0')}`);
+            } else {
+                ranges.push(`U+${start.toString(16).toUpperCase().padStart(4, '0')}-${end.toString(16).toUpperCase().padStart(4, '0')}`);
+            }
+            start = sortedCodepoints[i];
+            end = start;
+        }
+    }
+
+    // 添加最后一个范围
+    if (start === end) {
+        ranges.push(`U+${start.toString(16).toUpperCase().padStart(4, '0')}`);
+    } else {
+        ranges.push(`U+${start.toString(16).toUpperCase().padStart(4, '0')}-${end.toString(16).toUpperCase().padStart(4, '0')}`);
+    }
+
+    return ranges.join(', ');
+}
+
+function generateFileInfo(fontFiles) {
+    let totalChars = 0;
+    const fileList = [];
+
+    fontFiles.forEach((file, index) => {
+        const charCount = file.codepoints.length;
+        totalChars += charCount;
+        const unicodeRange = generateUnicodeRange(file.codepoints);
+
+        fileList.push({
+            name: `${fontFileName}-subset-${index + 1}`,
+            charCount: charCount,
+            unicodeRange: unicodeRange
+        });
+    });
+
+    return {
+        fileCount: fontFiles.length,
+        totalChars: totalChars,
+        files: fileList
+    };
+}
+
+function displayResults(cssCode, fileInfo, fontFiles) {
+    try {
+        // 安全地获取和设置 DOM 元素，添加空值检查
+        const cssCodeEl = document.getElementById('cssCode');
+        if (!cssCodeEl) {
+            console.error('找不到 cssCode 元素');
+            return;
+        }
+        cssCodeEl.textContent = cssCode || '';
+
+        // 显示文件信息
+        const fileCountEl = document.getElementById('fileCount');
+        const totalCharsEl = document.getElementById('totalChars');
+        if (fileCountEl) {
+            fileCountEl.textContent = fileInfo.fileCount || 0;
+        } else {
+            console.warn('找不到 fileCount 元素');
+        }
+        if (totalCharsEl) {
+            totalCharsEl.textContent = fileInfo.totalChars || 0;
+        } else {
+            console.warn('找不到 totalChars 元素');
+        }
+
+        // 显示文件列表
+        const fileListElement = document.getElementById('fileList');
+        if (!fileListElement) {
+            console.error('找不到 fileList 元素');
+            return;
+        }
+        fileListElement.innerHTML = '';
+
+        if (fileInfo.files && Array.isArray(fileInfo.files)) {
+            fileInfo.files.forEach(file => {
+                try {
+                    const fileItem = document.createElement('div');
+                    fileItem.className = 'file-item';
+                    fileItem.innerHTML = `
+                        <strong>${file.name || '未知文件'}</strong><br>
+                        ${i18nManager.t('charCount')}: ${file.charCount || 0}<br>
+                        ${i18nManager.t('unicodeRange')}: ${file.unicodeRange || 'N/A'}
+                    `;
+                    fileListElement.appendChild(fileItem);
+                } catch (e) {
+                    console.warn('添加文件项失败:', e, file);
+                }
+            });
+        }
+        
+        // 更新结果摘要的国际化
+        const resultSummary = document.querySelector('.result-summary p');
+        if (resultSummary && resultSummary.isConnected) {
+            try {
+                resultSummary.setAttribute('data-i18n-params', JSON.stringify({
+                    fileCount: fileInfo.fileCount || 0,
+                    totalChars: fileInfo.totalChars || 0
+                }));
+                // 只更新结果摘要元素，避免更新整个页面时出错
+                const summaryKey = resultSummary.getAttribute('data-i18n');
+                if (summaryKey && resultSummary.isConnected) {
+                    const params = JSON.parse(resultSummary.getAttribute('data-i18n-params') || '{}');
+                    resultSummary.textContent = i18nManager.t(summaryKey, params);
+                }
+            } catch (e) {
+                console.warn('更新结果摘要失败:', e);
+            }
+        }
+
+        // 保存字体文件到全局变量
+        window.fontFiles = fontFiles;
+        window.fileInfo = fileInfo;
+
+        // 显示结果区域
+        const resultSection = document.getElementById('resultSection');
+        if (!resultSection) {
+            console.error('找不到 resultSection 元素');
+            return;
+        }
+        resultSection.style.display = 'block';
+
+        // 滚动到结果区域
+        try {
+            resultSection.scrollIntoView({
+                behavior: 'smooth'
+            });
+        } catch (e) {
+            // 如果 scrollIntoView 不支持，使用降级方案
+            console.warn('scrollIntoView 不支持，使用降级方案:', e);
+            try {
+                window.scrollTo(0, resultSection.offsetTop);
+            } catch (e2) {
+                console.warn('滚动失败:', e2);
+            }
+        }
+    } catch (error) {
+        console.error('displayResults 函数执行失败:', error);
+        // 即使出错，也尝试保存数据
+        try {
+            window.fontFiles = fontFiles;
+            window.fileInfo = fileInfo;
+        } catch (e) {
+            console.error('保存数据失败:', e);
+        }
+        // 显示错误提示
+        alert(i18nManager.t('displayResultsError', { error: error.message }));
+    }
+}
+
+function showLoading(show, progress = 0) {
+    const loading = document.getElementById('loading');
+    const generateBtn = document.getElementById('generateBtn');
+    const progressBar = document.getElementById('progressBar');
+    const progressText = document.getElementById('progressText');
+
+    if (show) {
+        loading.style.display = 'flex';
+        generateBtn.disabled = true;
+        generateBtn.textContent = i18nManager.t('processing');
+
+        if (progressBar && progressText) {
+            progressBar.style.width = `${progress}%`;
+            progressText.textContent = `${Math.round(progress)}%`;
+        }
+    } else {
+        loading.style.display = 'none';
+        generateBtn.disabled = false;
+        generateBtn.textContent = i18nManager.t('generateBtn');
+
+        if (progressBar && progressText) {
+            progressBar.style.width = '0%';
+            progressText.textContent = '0%';
+        }
+        setProcessingDetail();
+    }
+}
+
+function copyToClipboard(elementId) {
+    const element = document.getElementById(elementId);
+    const text = element.textContent;
+
+    navigator.clipboard.writeText(text).then(() => {
+        alert(i18nManager.t('copied'));
+    }).catch(err => {
+        console.error('复制失败:', err);
+        alert(i18nManager.t('copyFailed'));
+    });
+}
+
+async function downloadPackage() {
+    if (!window.fontFiles) {
+        alert(i18nManager.t('generateFirst'));
+        return;
+    }
+
+    const outputFormat = document.getElementById('outputFormat').value;
+    const cssCode = document.getElementById('cssCode').textContent;
+    const downloadBtn = document.getElementById('downloadBtn');
+
+    // 显示加载状态
+    const originalText = downloadBtn.textContent;
+    downloadBtn.disabled = true;
+    downloadBtn.textContent = i18nManager.t('packing');
+
+    try {
+        console.log('开始创建 ZIP 文件...');
+        const zip = new JSZip();
+        setProcessingDetail('packagingFiles');
+
+        // 分批添加字体文件，避免一次性处理太多文件导致阻塞
+        const totalFiles = window.fontFiles.length;
+        console.log(`准备添加 ${totalFiles} 个字体文件`);
+
+        // 使用异步方式添加文件，每批处理几个文件后让出主线程
+        // 根据文件数量动态调整批次大小
+        const batchSize = totalFiles > 100 ? 5 : 10; // 文件多时使用更小的批次
+        
+        for (let i = 0; i < totalFiles; i += batchSize) {
+            const endIndex = Math.min(i + batchSize, totalFiles);
+            
+            // 添加当前批次的文件
+            for (let j = i; j < endIndex; j++) {
+                const file = window.fontFiles[j];
+                // 直接使用 buffer，避免创建额外的 Blob（如果可能）
+                zip.file(`fonts/${fontFileName}-subset-${j + 1}.${outputFormat}`, file.buffer);
+            }
+            
+            // 更新进度
+            const progress = Math.floor((endIndex / totalFiles) * 50); // 文件添加占 50% 进度
+            downloadBtn.textContent = `${i18nManager.t('packing')} ${progress}%`;
+            
+            // 让出主线程，避免阻塞
+            // 使用 requestIdleCallback 如果可用，否则使用 setTimeout
+            if (endIndex < totalFiles) {
+                if (window.requestIdleCallback) {
+                    await new Promise(resolve => {
+                        requestIdleCallback(() => resolve(), { timeout: 10 });
+                    });
+                } else {
+                    await new Promise(resolve => setTimeout(resolve, 10));
+                }
+            }
+        }
+
+        console.log('字体文件添加完成，添加 CSS 和 README...');
+
+        // 添加 CSS 文件
+        zip.file('styles/font.css', cssCode);
+
+        // 添加说明文件
+        const fontFamilyName = fontInfo ? fontInfo.familyName : 
+                              (currentFont && currentFont.names.fontFamily ? currentFont.names.fontFamily.en : 'SubsetFont');
+        const readme = `字体子集化工具生成的文件
+
+包含内容：
+- fonts/: ${window.fileInfo.fileCount} 个子集字体文件
+- styles/font.css: CSS 样式定义
+
+文件详情：
+${window.fileInfo.files.map(file => `- ${file.name}.${outputFormat}: ${file.charCount} 个字符 (${file.unicodeRange})`).join('\n')}
+
+总字符数: ${window.fileInfo.totalChars}
+
+使用方法：
+1. 将 fonts 和 styles 文件夹放入项目
+2. 在 HTML 中引入 styles/font.css
+3. 使用 font-family: '${fontFamilyName}'`;
+
+        zip.file('README.txt', readme);
+
+        downloadBtn.textContent = `${i18nManager.t('generatingZip')} 50%`;
+
+        // 生成 ZIP 文件，使用进度回调显示进度
+        console.log('开始生成 ZIP 文件...');
+        const startTime = performance.now();
+        
+        // 使用较低的压缩级别以提高速度，减少阻塞时间
+        // 对于字体文件，压缩率已经很高，使用较低级别可以显著提高速度
+        setProcessingDetail('zipGenerating');
+        addLog('zipGenerating');
+        const content = await zip.generateAsync({
+            type: 'blob',
+            compression: 'DEFLATE',
+            compressionOptions: {
+                level: 3 // 使用较低压缩级别（1-9），提高速度，减少阻塞
+            }
+        }, (metadata) => {
+            // 更新进度（生成 ZIP 占 50% 进度）
+            if (metadata && metadata.percent !== undefined) {
+                const progress = 50 + Math.floor(metadata.percent / 2);
+                downloadBtn.textContent = `${i18nManager.t('generatingZip')} ${progress}%`;
+            }
+        });
+
+        const endTime = performance.now();
+        console.log(`ZIP 文件生成完成，耗时: ${(endTime - startTime).toFixed(2)}ms`);
+        addLog('zipComplete', { duration: `${(endTime - startTime).toFixed(2)}ms` }, 'success');
+
+        downloadBtn.textContent = i18nManager.t('downloading');
+
+        // 下载文件
+        saveAs(content, `${fontFileName}-subset-package.zip`);
+        
+        console.log('下载完成！');
+        addLog('downloadComplete', {}, 'success');
+        setProcessingDetail();
+        downloadBtn.textContent = originalText;
+        downloadBtn.disabled = false;
+
+    } catch (error) {
+        console.error('打包失败:', error);
+        addLog('packageError', { error: error.message }, 'error');
+        alert(i18nManager.t('packageError', { error: error.message }));
+        setProcessingDetail();
+        downloadBtn.textContent = originalText;
+        downloadBtn.disabled = false;
+    }
+}
+
+// 将函数暴露到全局作用域，以便 HTML 中的 onclick 可以访问
+window.generateSubset = generateSubset;
+window.copyToClipboard = copyToClipboard;
+window.downloadPackage = downloadPackage;

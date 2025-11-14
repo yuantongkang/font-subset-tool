@@ -1,0 +1,19 @@
+{
+  "name": "font-subset-tool",
+  "version": "1.0.0",
+  "description": "Font subsetting tool for GitHub Actions",
+  "main": "process-font.js",
+  "scripts": {
+    "process": "node process-font.js"
+  },
+  "dependencies": {
+    "opentype.js": "^1.3.4",
+    "archiver": "^6.0.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "author": "",
+  "license": "MIT"
+}
+

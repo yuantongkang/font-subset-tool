@@ -1,0 +1,123 @@
+name: Font Subset Processing
+
+on:
+  workflow_dispatch:
+    inputs:
+      font_url:
+        description: 'Font file download URL'
+        required: true
+        type: string
+      split_strategy:
+        description: 'Split strategy (single, byRange, byCount)'
+        required: false
+        default: 'single'
+        type: choice
+        options:
+          - single
+          - byRange
+          - byCount
+      subset_strategy:
+        description: 'Subset strategy (all, common, chinese, custom)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - common
+          - chinese
+          - custom
+      output_format:
+        description: 'Output format (ttf, otf, woff, woff2)'
+        required: false
+        default: 'woff2'
+        type: choice
+        options:
+          - ttf
+          - otf
+          - woff
+          - woff2
+      split_count:
+        description: 'Characters per file when using byCount strategy'
+        required: false
+        default: '1000'
+        type: string
+      custom_range:
+        description: 'Custom Unicode range (e.g., U+4E00-9FFF,U+0020-007E)'
+        required: false
+        default: ''
+        type: string
+      font_weight:
+        description: 'Font weight (100-900)'
+        required: false
+        default: '400'
+        type: string
+      font_style:
+        description: 'Font style (normal, italic)'
+        required: false
+        default: 'normal'
+        type: choice
+        options:
+          - normal
+          - italic
+
+jobs:
+  process-font:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Process font
+        run: |
+          node process-font.js \
+            --font_url "${{ inputs.font_url }}" \
+            --split_strategy "${{ inputs.split_strategy }}" \
+            --subset_strategy "${{ inputs.subset_strategy }}" \
+            --output_format "${{ inputs.output_format }}" \
+            --split_count "${{ inputs.split_count }}" \
+            --custom_range "${{ inputs.custom_range }}" \
+            --font_weight "${{ inputs.font_weight }}" \
+            --font_style "${{ inputs.font_style }}" \
+            --output_dir output
+
+      - name: Upload font subset package
+        uses: actions/upload-artifact@v4
+        with:
+          name: font-subset-package
+          path: output/*.zip
+          retention-days: 30
+
+      - name: Upload output files
+        uses: actions/upload-artifact@v4
+        with:
+          name: font-subset-output
+          path: |
+            output/fonts/
+            output/styles/
+            output/README.txt
+          retention-days: 30
+
+      - name: Display results
+        run: |
+          echo "## Font Subset Processing Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Configuration:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Font URL: ${{ inputs.font_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Split Strategy: ${{ inputs.split_strategy }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Subset Strategy: ${{ inputs.subset_strategy }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Output Format: ${{ inputs.output_format }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Output Files:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Check the 'font-subset-package' artifact for the ZIP file" >> $GITHUB_STEP_SUMMARY
+          echo "- Check the 'font-subset-output' artifact for individual files" >> $GITHUB_STEP_SUMMARY
+
