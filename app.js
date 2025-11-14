@@ -1447,6 +1447,296 @@ function generateFileInfo(fontFiles) {
     };
 }
 
+// HTML 转义函数
+function escapeHTML(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// 生成 demo HTML 文件
+function generateDemoHTML(fontFamily, fontWeight, fontStyle, fileInfo) {
+    // 生成示例文本（根据字符范围）
+    let sampleText = '';
+    let sampleTextZh = '';
+    let sampleTextEn = '';
+    
+    // 尝试从文件信息中提取一些示例字符
+    if (fileInfo && fileInfo.files && fileInfo.files.length > 0) {
+        // 使用第一个文件的 Unicode 范围作为参考
+        const firstFile = fileInfo.files[0];
+        if (firstFile.unicodeRange) {
+            // 检查是否包含中文字符
+            if (firstFile.unicodeRange.includes('4E00') || firstFile.unicodeRange.includes('9FFF') || 
+                firstFile.unicodeRange.includes('3400') || firstFile.unicodeRange.includes('4DBF')) {
+                sampleTextZh = '字体子集化演示 - 中文字符示例：你好世界，这是一段测试文本。';
+            }
+            // 检查是否包含拉丁字符
+            if (firstFile.unicodeRange.includes('0020') || firstFile.unicodeRange.includes('007E') ||
+                firstFile.unicodeRange.includes('00A0') || firstFile.unicodeRange.includes('00FF')) {
+                sampleTextEn = 'Font Subset Demo - English Sample: The quick brown fox jumps over the lazy dog. 0123456789';
+            }
+        }
+    }
+    
+    // 如果没有检测到，使用默认文本
+    if (!sampleTextZh && !sampleTextEn) {
+        sampleTextEn = 'Font Subset Demo - Sample Text: ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz 0123456789';
+        sampleTextZh = '字体子集化演示 - 中文字符示例';
+    }
+    
+    sampleText = sampleTextEn + (sampleTextZh ? '\n' + sampleTextZh : '');
+    
+    // 转义 HTML 特殊字符
+    const escapedSampleText = escapeHTML(sampleText);
+    const escapedFontFamily = escapeHTML(fontFamily);
+
+    return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>字体子集演示 - ${escapedFontFamily}</title>
+    <link rel="stylesheet" href="styles/font.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: '${escapedFontFamily}', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-weight: ${fontWeight};
+            font-style: ${fontStyle};
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            font-weight: ${fontWeight};
+        }
+        
+        .header p {
+            font-size: 1.2em;
+            opacity: 0.9;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        .section {
+            margin-bottom: 40px;
+        }
+        
+        .section h2 {
+            font-size: 1.8em;
+            margin-bottom: 20px;
+            color: #667eea;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 10px;
+        }
+        
+        .demo-text {
+            font-size: 1.5em;
+            line-height: 1.8;
+            padding: 30px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .info-card {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .info-card h3 {
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 1.2em;
+        }
+        
+        .info-card p {
+            color: #666;
+            line-height: 1.6;
+        }
+        
+        .sizes {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .size-demo {
+            flex: 1;
+            min-width: 200px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .size-demo .size-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 10px;
+        }
+        
+        .size-12 { font-size: 12px; }
+        .size-16 { font-size: 16px; }
+        .size-24 { font-size: 24px; }
+        .size-32 { font-size: 32px; }
+        .size-48 { font-size: 48px; }
+        .size-64 { font-size: 64px; }
+        
+        .footer {
+            background: #f8f9fa;
+            padding: 20px;
+            text-align: center;
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 1.8em;
+            }
+            
+            .demo-text {
+                font-size: 1.2em;
+            }
+            
+            .content {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>${fontFamily}</h1>
+            <p>字体子集化演示页面</p>
+        </div>
+        
+        <div class="content">
+            <div class="section">
+                <h2>字体预览</h2>
+                <div class="demo-text">${escapedSampleText}</div>
+            </div>
+            
+            <div class="section">
+                <h2>不同字号展示</h2>
+                <div class="sizes">
+                    <div class="size-demo">
+                        <div class="size-label">12px</div>
+                        <div class="size-12">字体示例 Text Sample</div>
+                    </div>
+                    <div class="size-demo">
+                        <div class="size-label">16px</div>
+                        <div class="size-16">字体示例 Text Sample</div>
+                    </div>
+                    <div class="size-demo">
+                        <div class="size-label">24px</div>
+                        <div class="size-24">字体示例 Text Sample</div>
+                    </div>
+                    <div class="size-demo">
+                        <div class="size-label">32px</div>
+                        <div class="size-32">字体示例 Text Sample</div>
+                    </div>
+                    <div class="size-demo">
+                        <div class="size-label">48px</div>
+                        <div class="size-48">字体示例</div>
+                    </div>
+                    <div class="size-demo">
+                        <div class="size-label">64px</div>
+                        <div class="size-64">字体示例</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h2>字体信息</h2>
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h3>字体家族</h3>
+                        <p>${escapedFontFamily}</p>
+                    </div>
+                    <div class="info-card">
+                        <h3>字体粗细</h3>
+                        <p>${fontWeight}</p>
+                    </div>
+                    <div class="info-card">
+                        <h3>字体样式</h3>
+                        <p>${fontStyle}</p>
+                    </div>
+                    <div class="info-card">
+                        <h3>文件数量</h3>
+                        <p>${fileInfo.fileCount} 个子集文件</p>
+                    </div>
+                    <div class="info-card">
+                        <h3>总字符数</h3>
+                        <p>${fileInfo.totalChars} 个字符</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h2>使用方法</h2>
+                <div class="info-card">
+                    <h3>在您的项目中使用</h3>
+                    <p style="margin-top: 10px;">
+                        1. 将 <code>fonts</code> 和 <code>styles</code> 文件夹复制到您的项目中<br>
+                        2. 在 HTML 中引入 CSS 文件：<code>&lt;link rel="stylesheet" href="styles/font.css"&gt;</code><br>
+                        3. 使用字体：<code>font-family: '${escapedFontFamily}';</code>
+                    </p>
+                </div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>由字体子集化工具生成 | 生成时间: ${new Date().toLocaleString('zh-CN')}</p>
+        </div>
+    </div>
+</body>
+</html>`;
+}
+
 function displayResults(cssCode, fileInfo, fontFiles) {
     try {
         // 安全地获取和设置 DOM 元素，添加空值检查
@@ -1655,14 +1945,21 @@ async function downloadPackage() {
         // 添加 CSS 文件
         zip.file('styles/font.css', cssCode);
 
-        // 添加说明文件
+        // 生成 demo HTML 文件
         const fontFamilyName = fontInfo ? fontInfo.familyName : 
                               (currentFont && currentFont.names.fontFamily ? currentFont.names.fontFamily.en : 'SubsetFont');
+        const fontWeight = document.getElementById('fontWeight').value;
+        const fontStyle = document.getElementById('fontStyle').value;
+        const demoHTML = generateDemoHTML(fontFamilyName, fontWeight, fontStyle, window.fileInfo);
+        zip.file('index.html', demoHTML);
+
+        // 添加说明文件
         const readme = `字体子集化工具生成的文件
 
 包含内容：
 - fonts/: ${window.fileInfo.fileCount} 个子集字体文件
 - styles/font.css: CSS 样式定义
+- index.html: 字体预览演示页面
 
 文件详情：
 ${window.fileInfo.files.map(file => `- ${file.name}.${outputFormat}: ${file.charCount} 个字符 (${file.unicodeRange})`).join('\n')}
@@ -1672,7 +1969,8 @@ ${window.fileInfo.files.map(file => `- ${file.name}.${outputFormat}: ${file.char
 使用方法：
 1. 将 fonts 和 styles 文件夹放入项目
 2. 在 HTML 中引入 styles/font.css
-3. 使用 font-family: '${fontFamilyName}'`;
+3. 使用 font-family: '${fontFamilyName}'
+4. 或者直接打开 index.html 查看演示效果`;
 
         zip.file('README.txt', readme);
 
