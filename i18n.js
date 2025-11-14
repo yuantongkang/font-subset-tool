@@ -4,7 +4,7 @@ export const i18n = {
         // 页面标题和描述
         title: '字体子集化工具',
         description: '上传字体文件，生成优化的子集字体和 CSS',
-        footer: '基于 WASM 技术的字体子集化工具',
+        footer: '基于 opentype.js 和 Web Workers 的字体子集化工具',
         
         // 上传区域
         uploadTitle: '拖放字体文件到这里',
@@ -99,7 +99,7 @@ export const i18n = {
         // Page title and description
         title: 'Font Subset Tool',
         description: 'Upload font files and generate optimized subset fonts and CSS',
-        footer: 'Font subset tool based on WASM technology',
+        footer: 'Font subset tool based on opentype.js and Web Workers',
         
         // Upload area
         uploadTitle: 'Drag and drop font files here',

@@ -68,18 +68,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: '18'
-          cache: 'npm'
+          python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
-        run: npm ci
+        run: |
+          pip install -r .github/scripts/requirements.txt
 
       - name: Process font
         run: |
-          node process-font.js \
+          python .github/scripts/process-font.py \
             --font_url "${{ inputs.font_url }}" \
             --split_strategy "${{ inputs.split_strategy }}" \
             --subset_strategy "${{ inputs.subset_strategy }}" \
