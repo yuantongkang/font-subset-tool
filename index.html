@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -12,8 +12,8 @@
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
                 <div style="flex: 1;"></div>
                 <div class="language-switcher" style="display: flex; gap: 0.5rem;">
-                    <button id="langZh" class="lang-btn active" onclick="switchLanguage('zh')">中文</button>
-                    <button id="langEn" class="lang-btn" onclick="switchLanguage('en')">English</button>
+                    <button id="langZh" class="lang-btn" onclick="switchLanguage('zh')">中文</button>
+                    <button id="langEn" class="lang-btn active" onclick="switchLanguage('en')">English</button>
                 </div>
             </div>
             <h1 data-i18n="title">字体子集化工具</h1>
@@ -127,7 +127,6 @@ abcdefghijklmnopqrstuvwxyz
                     <div class="config-group">
                         <label for="splitStrategy" data-i18n="splitStrategy">分割策略:</label>
                         <select id="splitStrategy">
-                            <option value="single" data-i18n="splitSingle">单个文件</option>
                             <option value="byRange" data-i18n="splitByRange">按 Unicode 范围分割</option>
                             <option value="byCount" data-i18n="splitByCount">按字符数量分割</option>
                         </select>

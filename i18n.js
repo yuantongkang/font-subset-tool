@@ -195,9 +195,9 @@ export const i18n = {
 // 国际化工具函数
 export class I18nManager {
     constructor() {
-        // 从 localStorage 获取语言设置，默认为中文
-        this.currentLang = localStorage.getItem('language') || 'zh';
-        this.translations = i18n[this.currentLang] || i18n.zh;
+        // 从 localStorage 获取语言设置，默认为英文
+        this.currentLang = localStorage.getItem('language') || 'en';
+        this.translations = i18n[this.currentLang] || i18n.en;
     }
     
     // 获取翻译文本，支持占位符替换

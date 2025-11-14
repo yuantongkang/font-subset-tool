@@ -546,6 +546,11 @@ document.addEventListener('DOMContentLoaded', function() {
     const currentLang = i18nManager.getLanguage();
     document.getElementById('langZh').classList.toggle('active', currentLang === 'zh');
     document.getElementById('langEn').classList.toggle('active', currentLang === 'en');
+    // 设置默认分割策略为 byRange（因为 single 选项已移除）
+    const splitStrategy = document.getElementById('splitStrategy');
+    if (splitStrategy && !splitStrategy.value) {
+        splitStrategy.value = 'byRange';
+    }
     // 初始化 Worker
     initFontWorker();
     initializeEventListeners();
@@ -1119,9 +1124,6 @@ function parseCustomRange(rangeString) {
 
 function splitCodepoints(codepoints, strategy) {
     switch (strategy) {
-        case 'single':
-            return [codepoints];
-
         case 'byRange':
             return splitByUnicodeRange(codepoints);
 
@@ -1130,7 +1132,8 @@ function splitCodepoints(codepoints, strategy) {
             return splitByCharacterCount(codepoints, splitCount);
 
         default:
-            return [codepoints];
+            // 默认使用 byRange 策略
+            return splitByUnicodeRange(codepoints);
     }
 }
 
