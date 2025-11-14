@@ -4,6 +4,12 @@
 
 A web-based font subsetting tool that uses opentype.js library and Web Workers to process font files and generate optimized subset fonts with corresponding CSS files.
 
+## 🌐 Live Demo
+
+**👉 [Try it online](https://yuantongkang.github.io/font-subset-tool/)**
+
+Experience the tool directly in your browser without any installation!
+
 ## Table of Contents
 
 - [Features](#features)

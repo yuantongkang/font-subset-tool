@@ -2,6 +2,12 @@
 
 一个基于 Web 技术的字体子集化工具，使用 opentype.js 库和 Web Workers 处理字体文件，生成优化的子集字体和对应的 CSS 文件。
 
+## 🌐 在线预览
+
+**👉 [在线体验](https://yuantongkang.github.io/font-subset-tool/)**
+
+无需安装，直接在浏览器中使用！
+
 ## 目录
 
 - [功能特性](#功能特性)
