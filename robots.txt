@@ -1,0 +1,15 @@
+# robots.txt for font-subset-tool
+# Allow all search engines to crawl the site
+
+User-agent: *
+Allow: /
+
+# Sitemap location
+Sitemap: https://yuantongkang.github.io/font-subset-tool/sitemap.xml
+
+# Disallow crawling of unnecessary files
+Disallow: /node_modules/
+Disallow: /*.lock
+Disallow: /.git/
+Disallow: /.github/
+
