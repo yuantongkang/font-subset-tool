@@ -9,7 +9,8 @@ let currentFont = null;
 let fontBuffer = null;
 let fontFileName = '';
 let availableCodepoints = [];
-let fontWorker = null;
+let fontWorker = null; // 保留单个 Worker 用于字体解析和码点分割
+let fontWorkerPool = null; // Worker Pool 用于并行生成子集
 let fontInfo = null; // 存储字体信息（从 Worker 获取）
 
 let processingDetailState = null;
@@ -172,7 +173,245 @@ function clearLog() {
 // 暴露到全局
 window.clearLog = clearLog;
 
-// 初始化 Web Worker
+// Worker Pool 管理器
+class FontWorkerPool {
+    constructor(maxWorkers = null) {
+        // 根据 CPU 核心数或任务数量确定 Worker 数量
+        // 默认使用 navigator.hardwareConcurrency，如果没有则使用 4
+        this.maxWorkers = maxWorkers || (navigator.hardwareConcurrency || 4);
+        // 限制最大 Worker 数量，避免创建过多
+        this.maxWorkers = Math.min(this.maxWorkers, 8);
+        this.workers = [];
+        this.taskQueue = [];
+        this.activeTasks = new Map(); // taskId -> { worker, resolve, reject }
+        this.nextTaskId = 0;
+        this.initialized = false;
+    }
+
+    // 初始化 Worker Pool
+    async initialize(fontBuffer) {
+        if (this.initialized) {
+            // 如果已初始化，更新所有 Worker 的字体缓存
+            await this.updateFontBuffer(fontBuffer);
+            return;
+        }
+
+        console.log(`初始化 Worker Pool，创建 ${this.maxWorkers} 个 Worker`);
+        
+        // 创建多个 Worker
+        const initPromises = [];
+        for (let i = 0; i < this.maxWorkers; i++) {
+            try {
+                const worker = new Worker('font-worker.js');
+                const workerId = i;
+                
+                // 设置消息处理器
+                worker.addEventListener('message', (e) => {
+                    this.handleWorkerMessage(workerId, e);
+                });
+                
+                worker.addEventListener('error', (error) => {
+                    console.error(`Worker ${workerId} 错误:`, error);
+                    this.handleWorkerError(workerId, error);
+                });
+                
+                this.workers.push({
+                    worker,
+                    id: workerId,
+                    busy: false
+                });
+                
+                // 初始化 Worker，加载字体
+                initPromises.push(
+                    new Promise((resolve, reject) => {
+                        const timeout = setTimeout(() => {
+                            reject(new Error(`Worker ${workerId} 初始化超时`));
+                        }, 30000);
+                        
+                        const messageHandler = (e) => {
+                            if (e.data.type === 'fontParsed' || e.data.type === 'error') {
+                                clearTimeout(timeout);
+                                worker.removeEventListener('message', messageHandler);
+                                if (e.data.type === 'error') {
+                                    reject(new Error(e.data.data.message));
+                                } else {
+                                    resolve();
+                                }
+                            }
+                        };
+                        
+                        worker.addEventListener('message', messageHandler);
+                        
+                        // 发送字体数据（使用副本，避免转移所有权）
+                        const bufferCopy = fontBuffer.slice(0);
+                        worker.postMessage({
+                            type: 'parseFont',
+                            data: { buffer: bufferCopy }
+                        }, [bufferCopy]);
+                    })
+                );
+            } catch (error) {
+                console.error(`创建 Worker ${i} 失败:`, error);
+            }
+        }
+        
+        try {
+            await Promise.all(initPromises);
+            this.initialized = true;
+            console.log(`Worker Pool 初始化完成，共 ${this.workers.length} 个 Worker`);
+        } catch (error) {
+            console.error('Worker Pool 初始化失败:', error);
+            // 清理已创建的 Worker
+            this.workers.forEach(({ worker }) => worker.terminate());
+            this.workers = [];
+            throw error;
+        }
+    }
+
+    // 更新所有 Worker 的字体缓存
+    async updateFontBuffer(fontBuffer) {
+        const updatePromises = this.workers.map(({ worker }) => {
+            return new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                    reject(new Error('更新字体缓存超时'));
+                }, 10000);
+                
+                const messageHandler = (e) => {
+                    if (e.data.type === 'fontParsed' || e.data.type === 'error') {
+                        clearTimeout(timeout);
+                        worker.removeEventListener('message', messageHandler);
+                        if (e.data.type === 'error') {
+                            reject(new Error(e.data.data.message));
+                        } else {
+                            resolve();
+                        }
+                    }
+                };
+                
+                worker.addEventListener('message', messageHandler);
+                const bufferCopy = fontBuffer.slice(0);
+                worker.postMessage({
+                    type: 'parseFont',
+                    data: { buffer: bufferCopy }
+                }, [bufferCopy]);
+            });
+        });
+        
+        await Promise.all(updatePromises);
+    }
+
+    // 处理 Worker 消息
+    handleWorkerMessage(workerId, e) {
+        const { type, data, taskId } = e.data;
+        
+        if (type === 'subsetCreated' && taskId !== undefined) {
+            // 子集创建完成
+            const task = this.activeTasks.get(taskId);
+            if (task) {
+                const { resolve, workerInfo } = task;
+                workerInfo.busy = false;
+                this.activeTasks.delete(taskId);
+                resolve(data.buffer);
+                // 处理下一个任务
+                this.processNextTask();
+            }
+        } else if (type === 'error' && taskId !== undefined) {
+            // 任务错误
+            const task = this.activeTasks.get(taskId);
+            if (task) {
+                const { reject, workerInfo } = task;
+                workerInfo.busy = false;
+                this.activeTasks.delete(taskId);
+                reject(new Error(data.message));
+                // 处理下一个任务
+                this.processNextTask();
+            }
+        }
+    }
+
+    // 处理 Worker 错误
+    handleWorkerError(workerId, error) {
+        console.error(`Worker ${workerId} 发生错误:`, error);
+        // 找到使用该 Worker 的任务并拒绝
+        for (const [taskId, task] of this.activeTasks.entries()) {
+            if (task.workerInfo.id === workerId) {
+                task.reject(new Error(`Worker ${workerId} 错误: ${error.message || '未知错误'}`));
+                task.workerInfo.busy = false;
+                this.activeTasks.delete(taskId);
+            }
+        }
+    }
+
+    // 处理下一个任务
+    processNextTask() {
+        if (this.taskQueue.length === 0) return;
+        
+        // 找到空闲的 Worker
+        const availableWorker = this.workers.find(w => !w.busy);
+        if (!availableWorker) return;
+        
+        // 获取下一个任务
+        const task = this.taskQueue.shift();
+        this.executeTask(availableWorker, task);
+    }
+
+    // 执行任务
+    executeTask(workerInfo, task) {
+        workerInfo.busy = true;
+        const taskId = this.nextTaskId++;
+        
+        this.activeTasks.set(taskId, {
+            workerInfo,
+            resolve: task.resolve,
+            reject: task.reject
+        });
+        
+        // 发送任务到 Worker
+        workerInfo.worker.postMessage({
+            type: 'createSubset',
+            data: {
+                subsetCodepoints: task.codepoints,
+                outputFormat: task.outputFormat,
+                index: task.index,
+                total: task.total,
+                taskId: taskId // 添加任务 ID
+            }
+        });
+    }
+
+    // 添加任务到队列
+    async createSubset(codepoints, outputFormat, index, total) {
+        return new Promise((resolve, reject) => {
+            const task = {
+                codepoints,
+                outputFormat,
+                index,
+                total,
+                resolve,
+                reject
+            };
+            
+            // 尝试立即执行，如果没有空闲 Worker 则加入队列
+            const availableWorker = this.workers.find(w => !w.busy);
+            if (availableWorker) {
+                this.executeTask(availableWorker, task);
+            } else {
+                this.taskQueue.push(task);
+            }
+        });
+    }
+
+    // 清理资源
+    terminate() {
+        this.workers.forEach(({ worker }) => worker.terminate());
+        this.workers = [];
+        this.taskQueue = [];
+        this.activeTasks.clear();
+        this.initialized = false;
+    }
+}
+
+// 初始化 Web Worker（用于字体解析和码点分割）
 function initFontWorker() {
     if (!fontWorker) {
         try {
@@ -312,6 +551,18 @@ document.addEventListener('DOMContentLoaded', function() {
     initializeEventListeners();
 });
 
+// 页面卸载时清理 Worker Pool
+window.addEventListener('beforeunload', function() {
+    if (fontWorkerPool) {
+        fontWorkerPool.terminate();
+        fontWorkerPool = null;
+    }
+    if (fontWorker) {
+        fontWorker.terminate();
+        fontWorker = null;
+    }
+});
+
 // 更新 select 选项的文本
 function updateSelectOptions() {
     // 更新所有 select 中的 option 文本
@@ -436,13 +687,36 @@ function handleFontFile(file) {
     reader.readAsArrayBuffer(file);
 }
 
-function loadFont(buffer) {
+async function loadFont(buffer) {
     addLog('fontLoaded');
     
     // 如果 Worker 可用，使用 Worker 处理
     if (fontWorker) {
         // 保存 buffer 的副本，因为 Transferable Objects 会转移所有权
         fontBuffer = buffer.slice(0);
+        
+        // 初始化或更新 Worker Pool
+        try {
+            if (!fontWorkerPool) {
+                fontWorkerPool = new FontWorkerPool();
+            }
+            await fontWorkerPool.initialize(buffer);
+            console.log('Worker Pool 初始化成功，将使用并行处理');
+        } catch (error) {
+            console.warn('Worker Pool 初始化失败，将使用单个 Worker:', error);
+            addLog('workerError', { error: `Worker Pool 初始化失败: ${error.message}` }, 'warning');
+            // 清理失败的 Worker Pool
+            if (fontWorkerPool) {
+                try {
+                    fontWorkerPool.terminate();
+                } catch (e) {
+                    console.error('清理 Worker Pool 失败:', e);
+                }
+                fontWorkerPool = null;
+            }
+            // 继续使用单个 Worker
+        }
+        
         fontWorker.postMessage({
             type: 'parseFont',
             data: { buffer: buffer }
@@ -660,8 +934,8 @@ async function generateSubset() {
         const totalGroups = codepointGroups.length;
         console.log('开始创建字体文件，总组数:', totalGroups);
 
-        // 并行创建子集字体（使用 Worker 时）
-        if (fontWorker) {
+        // 并行创建子集字体（使用 Worker Pool 时）
+        if (fontWorkerPool && fontWorkerPool.initialized) {
             // 重置计数器
             completedSubsets = 0;
             totalSubsets = totalGroups;
@@ -670,7 +944,45 @@ async function generateSubset() {
             setProcessingDetail('creatingSubset', { current: 0, total: totalGroups });
             addLog('creatingSubset', { current: 0, total: totalGroups });
             
-            // 使用 Worker 并行处理
+            console.log(`使用 Worker Pool 并行处理 ${totalGroups} 个子集`);
+            
+            // 使用 Worker Pool 并行处理所有子集
+            const subsetPromises = codepointGroups.map((group, i) => {
+                return fontWorkerPool.createSubset(group, outputFormat, i, totalGroups)
+                    .then(buffer => {
+                        // 更新进度
+                        completedSubsets++;
+                        const progress = 30 + Math.floor(completedSubsets / totalGroups * 60);
+                        setProcessingDetail('creatingSubset', { current: completedSubsets, total: totalGroups });
+                        showLoading(true, progress);
+                        addLog('subsetCreated', { current: completedSubsets, total: totalGroups }, 'success');
+                        return { buffer, index: i };
+                    });
+            });
+            
+            // 等待所有子集创建完成
+            const subsetResults = await Promise.all(subsetPromises);
+            
+            // 按索引排序并组装字体文件
+            subsetResults.sort((a, b) => a.index - b.index);
+            for (let i = 0; i < subsetResults.length; i++) {
+                fontFiles.push({
+                    buffer: subsetResults[i].buffer,
+                    codepoints: codepointGroups[i],
+                    index: i
+                });
+            }
+        } else if (fontWorker) {
+            // 降级到单个 Worker（串行处理）
+            // 重置计数器
+            completedSubsets = 0;
+            totalSubsets = totalGroups;
+            
+            // 设置初始处理详情
+            setProcessingDetail('creatingSubset', { current: 0, total: totalGroups });
+            addLog('creatingSubset', { current: 0, total: totalGroups });
+            
+            // 使用单个 Worker 处理（虽然发送了多个请求，但会串行处理）
             const subsetPromises = codepointGroups.map((group, i) => {
                 return new Promise((resolve) => {
                     subsetResolves.set(i, resolve);

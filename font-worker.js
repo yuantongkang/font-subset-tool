@@ -104,18 +104,31 @@ self.addEventListener('message', async function(e) {
                 
             case 'createSubset': {
                 // 创建子集字体
-                const { subsetCodepoints, outputFormat, index, total } = data;
-                const subsetBuffer = await createSubsetFont(subsetCodepoints, outputFormat);
-                
-                // 将 ArrayBuffer 转换为可传输的格式
-                self.postMessage({
-                    type: 'subsetCreated',
-                    data: {
-                        buffer: subsetBuffer,
-                        index: index,
-                        total: total
-                    }
-                }, [subsetBuffer]); // 转移 ArrayBuffer 的所有权
+                const { subsetCodepoints, outputFormat, index, total, taskId } = data;
+                try {
+                    const subsetBuffer = await createSubsetFont(subsetCodepoints, outputFormat);
+                    
+                    // 将 ArrayBuffer 转换为可传输的格式
+                    self.postMessage({
+                        type: 'subsetCreated',
+                        data: {
+                            buffer: subsetBuffer,
+                            index: index,
+                            total: total
+                        },
+                        taskId: taskId // 返回任务 ID，用于 Worker Pool 匹配任务
+                    }, [subsetBuffer]); // 转移 ArrayBuffer 的所有权
+                } catch (error) {
+                    // 如果出错，发送错误消息
+                    self.postMessage({
+                        type: 'error',
+                        data: {
+                            message: error.message,
+                            stack: error.stack
+                        },
+                        taskId: taskId
+                    });
+                }
                 break;
             }
                 
